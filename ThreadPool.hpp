@@ -6,6 +6,7 @@
 #include <atomic>
 #include <memory>
 #include <future>
+#include <tuple>
 
 #ifndef THREAD_POOL
 #define THREAD_POOL
@@ -22,19 +23,23 @@ public:
 
 	template<typename TFuncToRun, typename ...TFuncParams,
 		typename = std::enable_if_t<std::is_void_v<std::invoke_result_t<std::decay_t<TFuncToRun>, std::decay_t<TFuncParams>...>>>>
-	std::future<bool> run(const TFuncToRun& funcToRun, const TFuncParams& ...funcParams)
+	std::future<bool> run(TFuncToRun&& funcToRun, TFuncParams&& ...funcParams)
 	{
 		// we use bool to determine if the task is successfully completed
 		auto sharedPtrPromise = std::make_shared<std::promise<bool>>();
 		std::future<bool> funcFuture = sharedPtrPromise->get_future();
 
 		std::unique_lock<std::mutex> lock(m_dequeMutex);
-
-		m_tasks.push_back([funcToRun, funcParams..., sharedPtrPromise]()
+		m_tasks.push_back([funcToRun = std::forward<TFuncToRun>(funcToRun),
+			funcParams = std::make_tuple(std::forward<TFuncParams>(funcParams)...), sharedPtrPromise]()
 		{
 			try
 			{
-				funcToRun(funcParams...);
+				std::apply([&funcToRun](auto&& ... funcParams)
+				{
+					funcToRun(funcParams...);
+				}, std::move(funcParams));
+				
 				sharedPtrPromise->set_value(true);
 			}
 			catch (...)
@@ -53,18 +58,22 @@ public:
 	template<typename TFuncToRun, typename ...TFuncParams,
 		typename TReturn = std::invoke_result_t<std::decay_t<TFuncToRun>, std::decay_t<TFuncParams>...>,
 		typename = std::enable_if_t<!std::is_void_v<TReturn>>>
-	std::future<TReturn> run(const TFuncToRun& funcToRun, const TFuncParams& ...funcParams)
+	std::future<TReturn> run(TFuncToRun&& funcToRun, TFuncParams&& ...funcParams)
 	{
 		auto sharedPtrPromise = std::make_shared<std::promise<TReturn>>();
 		std::future<TReturn> funcFuture = sharedPtrPromise->get_future();
 
 		std::unique_lock<std::mutex> lock(m_dequeMutex);
 
-		m_tasks.push_back([funcToRun, funcParams..., sharedPtrPromise]()
+		m_tasks.push_back([funcToRun = std::forward<TFuncToRun>(funcToRun),
+			funcParams = std::make_tuple(std::forward<TFuncParams>(funcParams)...), sharedPtrPromise]()
 		{
 			try
 			{
-				sharedPtrPromise->set_value(funcToRun(funcParams...));
+				std::apply([&funcToRun, sharedPtrPromise](auto&& ... funcParams)
+				{
+					sharedPtrPromise->set_value(funcToRun(funcParams...));
+				}, std::move(funcParams));
 			}
 			catch (...)
 			{
